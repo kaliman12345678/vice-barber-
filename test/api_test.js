@@ -63,8 +63,8 @@ async function runTests() {
 
   // 3. Disponibilidad y Prevención de Solapamientos
   console.log('\n--- 3. Motor de Disponibilidad y Solapamiento ---');
-  // Usar fecha futura garantizada en día hábil (Lunes o Martes)
-  const testFecha = '2026-11-02'; // Lunes
+  // Usar fecha futura garantizada en día hábil (Martes donde todos laboran)
+  const testFecha = '2026-11-03'; // Martes (Día 2)
   const resDisp1 = await request('GET', `/disponibilidad?barbero_id=${barbero.id}&fecha=${testFecha}&duracion_minutos=${servicio.duracion_minutos}`);
   assert.strictEqual(resDisp1.status, 200);
   assert.ok(resDisp1.data.slots.length > 0, 'Debe generar slots');

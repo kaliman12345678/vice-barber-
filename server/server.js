@@ -576,35 +576,59 @@ app.delete('/api/bloqueos/:id', (req, res) => {
 });
 
 // ----------------------------------------------------
-// 7. COSTOS Y GASTOS OPERATIVOS
+// 7. INGRESOS Y EGRESOS (MOVIMIENTOS DE CAJA & COSTOS)
 // ----------------------------------------------------
 app.get('/api/costos', (req, res) => {
-  const { desde, hasta, categoria } = req.query;
+  const { desde, hasta, categoria, tipo } = req.query;
   try {
-    let sql = 'SELECT * FROM costos WHERE 1=1';
+    let sql = `
+      SELECT c.*, b.nombre as barbero_nombre 
+      FROM costos c 
+      LEFT JOIN barberos b ON c.barbero_id = b.id 
+      WHERE 1=1
+    `;
     const params = [];
 
     if (desde && hasta) {
-      sql += ' AND fecha BETWEEN ? AND ?';
+      sql += ' AND c.fecha BETWEEN ? AND ?';
       params.push(desde, hasta);
     }
     if (categoria) {
-      sql += ' AND categoria = ?';
+      sql += ' AND c.categoria = ?';
       params.push(categoria);
     }
+    if (tipo) {
+      sql += ' AND c.tipo = ?';
+      params.push(tipo);
+    }
 
-    sql += ' ORDER BY fecha DESC';
-    const costos = db.prepare(sql).all(...params);
-    const total = costos.reduce((sum, c) => sum + c.monto_cop, 0);
+    sql += ' ORDER BY c.fecha DESC, c.id DESC';
+    const movimientos = db.prepare(sql).all(...params);
 
-    res.json({ costos, total });
+    const totalEgresos = movimientos
+      .filter(m => !m.tipo || m.tipo === 'egreso')
+      .reduce((sum, c) => sum + c.monto_cop, 0);
+
+    const totalIngresos = movimientos
+      .filter(m => m.tipo === 'ingreso')
+      .reduce((sum, c) => sum + c.monto_cop, 0);
+
+    const balanceNeto = totalIngresos - totalEgresos;
+
+    res.json({
+      costos: movimientos,
+      total_egresos: totalEgresos,
+      total_ingresos: totalIngresos,
+      balance_neto: balanceNeto,
+      total: totalEgresos // compatibilidad
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
 app.post('/api/costos', (req, res) => {
-  const { categoria, descripcion, monto_cop, fecha, metodo_pago, notas } = req.body;
+  const { tipo, categoria, descripcion, monto_cop, fecha, metodo_pago, barbero_id, notas } = req.body;
 
   if (!categoria || !descripcion || !monto_cop || !fecha) {
     return res.status(400).json({ error: 'Categoría, descripción, monto y fecha requeridos' });
@@ -612,11 +636,20 @@ app.post('/api/costos', (req, res) => {
 
   try {
     const stmt = db.prepare(`
-      INSERT INTO costos (categoria, descripcion, monto_cop, fecha, metodo_pago, notas)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO costos (tipo, categoria, descripcion, monto_cop, fecha, metodo_pago, barbero_id, notas)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `);
-    const result = stmt.run(categoria, descripcion, Number(monto_cop), fecha, metodo_pago || 'Efectivo', notas || '');
-    res.status(201).json({ id: result.lastInsertRowid, message: 'Gasto registrado correctamente' });
+    const result = stmt.run(
+      tipo || 'egreso',
+      categoria,
+      descripcion,
+      Number(monto_cop),
+      fecha,
+      metodo_pago || 'Efectivo',
+      barbero_id ? Number(barbero_id) : null,
+      notas || ''
+    );
+    res.status(201).json({ id: result.lastInsertRowid, message: 'Movimiento registrado correctamente' });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -626,18 +659,211 @@ app.delete('/api/costos/:id', (req, res) => {
   const { id } = req.params;
   try {
     db.prepare('DELETE FROM costos WHERE id = ?').run(id);
-    res.json({ success: true, message: 'Gasto eliminado' });
+    res.json({ success: true, message: 'Registro eliminado' });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
 // ----------------------------------------------------
-// 8. PLANTILLA DE LIQUIDACIÓN Y PAGOS POR PORCENTAJE
+// 8. PRODUCTOS, INVENTARIO Y VENTAS CON COMISIÓN
 // ----------------------------------------------------
-// Cálculo previo de comisiones antes de liquidar
+app.get('/api/productos', (req, res) => {
+  const todos = req.query.todos === 'true';
+  try {
+    const query = todos
+      ? 'SELECT * FROM productos ORDER BY nombre ASC'
+      : 'SELECT * FROM productos WHERE activo = 1 ORDER BY nombre ASC';
+    const productos = db.prepare(query).all();
+    res.json(productos);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/productos', (req, res) => {
+  const { nombre, foto_url, stock, precio_venta, costo_compra, porcentaje_comision, categoria, descripcion } = req.body;
+
+  if (!nombre || precio_venta === undefined) {
+    return res.status(400).json({ error: 'Nombre y precio de venta son requeridos' });
+  }
+
+  try {
+    const stmt = db.prepare(`
+      INSERT INTO productos (nombre, foto_url, stock, precio_venta, costo_compra, porcentaje_comision, categoria, descripcion, activo)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
+    `);
+    const result = stmt.run(
+      nombre.trim(),
+      foto_url || '',
+      Number(stock) || 0,
+      Number(precio_venta),
+      Number(costo_compra) || 0,
+      Number(porcentaje_comision) || 0,
+      categoria || 'General',
+      descripcion || ''
+    );
+    res.status(201).json({ id: result.lastInsertRowid, message: 'Producto agregado exitosamente' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.put('/api/productos/:id', (req, res) => {
+  const { id } = req.params;
+  const { nombre, foto_url, stock, precio_venta, costo_compra, porcentaje_comision, categoria, descripcion, activo } = req.body;
+
+  try {
+    const stmt = db.prepare(`
+      UPDATE productos
+      SET nombre = COALESCE(?, nombre),
+          foto_url = COALESCE(?, foto_url),
+          stock = COALESCE(?, stock),
+          precio_venta = COALESCE(?, precio_venta),
+          costo_compra = COALESCE(?, costo_compra),
+          porcentaje_comision = COALESCE(?, porcentaje_comision),
+          categoria = COALESCE(?, categoria),
+          descripcion = COALESCE(?, descripcion),
+          activo = COALESCE(?, activo)
+      WHERE id = ?
+    `);
+    stmt.run(nombre, foto_url, stock, precio_venta, costo_compra, porcentaje_comision, categoria, descripcion, activo, id);
+    res.json({ success: true, message: 'Producto actualizado' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.delete('/api/productos/:id', (req, res) => {
+  const { id } = req.params;
+  try {
+    db.prepare('DELETE FROM productos WHERE id = ?').run(id);
+    res.json({ success: true, message: 'Producto eliminado' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Registrar una Venta de Producto
+app.post('/api/ventas-productos', (req, res) => {
+  const { producto_id, cantidad, barbero_id, metodo_pago, fecha, notas } = req.body;
+
+  if (!producto_id || !cantidad || Number(cantidad) <= 0) {
+    return res.status(400).json({ error: 'Producto y cantidad válida requeridos' });
+  }
+
+  const transaction = db.transaction(() => {
+    const producto = db.prepare('SELECT * FROM productos WHERE id = ?').get(producto_id);
+    if (!producto) throw new Error('Producto no encontrado');
+
+    const qty = Number(cantidad);
+    if (producto.stock < qty) {
+      throw new Error(`Inventario insuficiente. Stock disponible: ${producto.stock}`);
+    }
+
+    const precioUnit = producto.precio_venta;
+    const costoUnit = producto.costo_compra || 0;
+    const totalVenta = precioUnit * qty;
+    const costoTotal = costoUnit * qty;
+    const pctComision = barbero_id ? (producto.porcentaje_comision || 0) : 0;
+    const montoComision = Math.round(totalVenta * (pctComision / 100));
+    const gananciaNeta = totalVenta - costoTotal - montoComision;
+
+    // 1. Descontar inventario
+    db.prepare('UPDATE productos SET stock = stock - ? WHERE id = ?').run(qty, producto_id);
+
+    // 2. Registrar venta
+    const stmtVenta = db.prepare(`
+      INSERT INTO ventas_productos (
+        producto_id, cantidad, precio_unitario, costo_unitario, total_venta,
+        porcentaje_comision, monto_comision, ganancia_neta, barbero_id, metodo_pago, fecha, notas
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    const resultVenta = stmtVenta.run(
+      producto_id,
+      qty,
+      precioUnit,
+      costoUnit,
+      totalVenta,
+      pctComision,
+      montoComision,
+      gananciaNeta,
+      barbero_id ? Number(barbero_id) : null,
+      metodo_pago || 'Efectivo',
+      fecha || new Date().toISOString().split('T')[0],
+      notas || ''
+    );
+
+    // 3. Registrar automáticamente el ingreso en caja
+    db.prepare(`
+      INSERT INTO costos (tipo, categoria, descripcion, monto_cop, fecha, metodo_pago, barbero_id, notas)
+      VALUES ('ingreso', 'Venta de Productos', ?, ?, ?, ?, ?, ?)
+    `).run(
+      `Venta: ${qty}x ${producto.nombre}`,
+      totalVenta,
+      fecha || new Date().toISOString().split('T')[0],
+      metodo_pago || 'Efectivo',
+      barbero_id ? Number(barbero_id) : null,
+      notas || 'Venta registrada en tienda'
+    );
+
+    return {
+      id: resultVenta.lastInsertRowid,
+      totalVenta,
+      montoComision,
+      gananciaNeta,
+      nuevoStock: producto.stock - qty
+    };
+  });
+
+  try {
+    const outcome = transaction();
+    res.status(201).json({
+      success: true,
+      message: 'Venta registrada, inventario descontado e ingreso sumado a caja',
+      ...outcome
+    });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// Listar historial de ventas de productos
+app.get('/api/ventas-productos', (req, res) => {
+  const { barbero_id, desde, hasta } = req.query;
+  try {
+    let sql = `
+      SELECT v.*, p.nombre as producto_nombre, p.foto_url as producto_foto, b.nombre as barbero_nombre
+      FROM ventas_productos v
+      JOIN productos p ON v.producto_id = p.id
+      LEFT JOIN barberos b ON v.barbero_id = b.id
+      WHERE 1=1
+    `;
+    const params = [];
+    if (barbero_id) {
+      sql += ' AND v.barbero_id = ?';
+      params.push(barbero_id);
+    }
+    if (desde && hasta) {
+      sql += ' AND v.fecha BETWEEN ? AND ?';
+      params.push(desde, hasta);
+    }
+    sql += ' ORDER BY v.fecha DESC, v.id DESC';
+
+    const ventas = db.prepare(sql).all(...params);
+    res.json(ventas);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ----------------------------------------------------
+// 9. PLANTILLA DE LIQUIDACIÓN Y PAGOS POR PORCENTAJE
+// ----------------------------------------------------
+// Cálculo previo de comisiones antes de liquidar (acepta % personalizado del dueño)
 app.get('/api/liquidaciones/preview', (req, res) => {
-  const { barbero_id, fecha_inicio, fecha_fin } = req.query;
+  const { barbero_id, fecha_inicio, fecha_fin, porcentaje } = req.query;
 
   if (!barbero_id || !fecha_inicio || !fecha_fin) {
     return res.status(400).json({ error: 'barbero_id, fecha_inicio y fecha_fin son requeridos' });
@@ -659,21 +885,44 @@ app.get('/api/liquidaciones/preview', (req, res) => {
       ORDER BY c.fecha ASC, c.hora_inicio ASC
     `).all(barbero_id, fecha_inicio, fecha_fin);
 
-    const totalBruto = citas.reduce((sum, c) => sum + (c.precio_cobrado || 0), 0);
-    const porcentaje = barbero.porcentaje_comision || 50.0;
-    const montoComision = Math.round(totalBruto * (porcentaje / 100));
-    const margenBarberia = totalBruto - montoComision;
+    // Ventas de productos realizadas por este barbero sin liquidar
+    const ventasProductos = db.prepare(`
+      SELECT v.*, p.nombre as producto_nombre
+      FROM ventas_productos v
+      JOIN productos p ON v.producto_id = p.id
+      WHERE v.barbero_id = ? 
+        AND v.fecha BETWEEN ? AND ?
+        AND v.liquidacion_id IS NULL
+      ORDER BY v.fecha ASC
+    `).all(barbero_id, fecha_inicio, fecha_fin);
+
+    const totalBrutoServicios = citas.reduce((sum, c) => sum + (c.precio_cobrado || 0), 0);
+
+    // Porcentaje editable por el dueño (si lo escribió, se usa; si no, el del barbero)
+    const porcentajeAplicado = (porcentaje !== undefined && porcentaje !== '' && !isNaN(porcentaje))
+      ? Number(porcentaje)
+      : (barbero.porcentaje_comision || 50.0);
+
+    const montoComisionServicios = Math.round(totalBrutoServicios * (porcentajeAplicado / 100));
+    const totalComisionProductos = ventasProductos.reduce((sum, v) => sum + (v.monto_comision || 0), 0);
+    const totalVentaProductos = ventasProductos.reduce((sum, v) => sum + (v.total_venta || 0), 0);
+
+    const comisionTotalBarbero = montoComisionServicios + totalComisionProductos;
+    const margenBarberia = (totalBrutoServicios - montoComisionServicios) + (totalVentaProductos - totalComisionProductos);
 
     res.json({
       barbero,
       fecha_inicio,
       fecha_fin,
       total_servicios: citas.length,
-      total_bruto: totalBruto,
-      porcentaje_aplicado: porcentaje,
-      monto_comision: montoComision,
+      total_bruto: totalBrutoServicios,
+      porcentaje_aplicado: porcentajeAplicado,
+      monto_comision: comisionTotalBarbero,
+      monto_comision_servicios: montoComisionServicios,
+      total_comision_productos: totalComisionProductos,
       margen_barberia: margenBarberia,
-      citas
+      citas,
+      ventas_productos: ventasProductos
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -682,26 +931,41 @@ app.get('/api/liquidaciones/preview', (req, res) => {
 
 // Guardar y cerrar la liquidación
 app.post('/api/liquidaciones', (req, res) => {
-  const { barbero_id, fecha_inicio, fecha_fin, porcentaje_aplicado, deducciones, metodo_pago, notas, citas_ids } = req.body;
+  const { barbero_id, fecha_inicio, fecha_fin, porcentaje_aplicado, deducciones, metodo_pago, notas, citas_ids, ventas_ids } = req.body;
 
-  if (!barbero_id || !fecha_inicio || !fecha_fin || !Array.isArray(citas_ids) || citas_ids.length === 0) {
-    return res.status(400).json({ error: 'Faltan datos obligatorios o no hay servicios seleccionados' });
+  const arrayCitas = Array.isArray(citas_ids) ? citas_ids : [];
+  const arrayVentas = Array.isArray(ventas_ids) ? ventas_ids : [];
+
+  if (!barbero_id || !fecha_inicio || !fecha_fin || (arrayCitas.length === 0 && arrayVentas.length === 0)) {
+    return res.status(400).json({ error: 'Faltan datos o no hay servicios ni ventas seleccionadas' });
   }
 
   const transaction = db.transaction(() => {
-    // 1. Obtener los servicios correspondientes
-    const placeholders = citas_ids.map(() => '?').join(',');
-    const citas = db.prepare(`
-      SELECT id, precio_cobrado FROM citas WHERE id IN (${placeholders})
-    `).all(...citas_ids);
-
-    const totalBruto = citas.reduce((sum, c) => sum + c.precio_cobrado, 0);
+    let totalBruto = 0;
+    let comisionServicios = 0;
     const pct = Number(porcentaje_aplicado);
-    const comision = Math.round(totalBruto * (pct / 100));
-    const ded = Number(deducciones) || 0;
-    const totalPagado = Math.max(0, comision - ded);
 
-    // 2. Insertar liquidación
+    // 1. Obtener y calcular citas si las hay
+    if (arrayCitas.length > 0) {
+      const placeholders = arrayCitas.map(() => '?').join(',');
+      const citas = db.prepare(`SELECT id, precio_cobrado FROM citas WHERE id IN (${placeholders})`).all(...arrayCitas);
+      totalBruto = citas.reduce((sum, c) => sum + c.precio_cobrado, 0);
+      comisionServicios = Math.round(totalBruto * (pct / 100));
+    }
+
+    // 2. Obtener y calcular comisiones por productos
+    let comisionProductos = 0;
+    if (arrayVentas.length > 0) {
+      const placeholdersVentas = arrayVentas.map(() => '?').join(',');
+      const ventas = db.prepare(`SELECT id, monto_comision FROM ventas_productos WHERE id IN (${placeholdersVentas})`).all(...arrayVentas);
+      comisionProductos = ventas.reduce((sum, v) => sum + v.monto_comision, 0);
+    }
+
+    const comisionTotal = comisionServicios + comisionProductos;
+    const ded = Number(deducciones) || 0;
+    const totalPagado = Math.max(0, comisionTotal - ded);
+
+    // 3. Insertar liquidación
     const stmt = db.prepare(`
       INSERT INTO liquidaciones (
         barbero_id, fecha_inicio, fecha_fin, total_servicios, total_bruto,
@@ -714,10 +978,10 @@ app.post('/api/liquidaciones', (req, res) => {
       barbero_id,
       fecha_inicio,
       fecha_fin,
-      citas.length,
+      arrayCitas.length,
       totalBruto,
       pct,
-      comision,
+      comisionTotal,
       ded,
       totalPagado,
       metodo_pago || 'Efectivo',
@@ -726,11 +990,17 @@ app.post('/api/liquidaciones', (req, res) => {
 
     const liquidacionId = result.lastInsertRowid;
 
-    // 3. Vincular citas a esta liquidación
-    const updateCitas = db.prepare(`
-      UPDATE citas SET liquidacion_id = ? WHERE id IN (${placeholders})
-    `);
-    updateCitas.run(liquidacionId, ...citas_ids);
+    // 4. Vincular citas
+    if (arrayCitas.length > 0) {
+      const placeholders = arrayCitas.map(() => '?').join(',');
+      db.prepare(`UPDATE citas SET liquidacion_id = ? WHERE id IN (${placeholders})`).run(liquidacionId, ...arrayCitas);
+    }
+
+    // 5. Vincular ventas de productos
+    if (arrayVentas.length > 0) {
+      const placeholdersV = arrayVentas.map(() => '?').join(',');
+      db.prepare(`UPDATE ventas_productos SET liquidacion_id = ? WHERE id IN (${placeholdersV})`).run(liquidacionId, ...arrayVentas);
+    }
 
     return { liquidacionId, totalPagado };
   });
@@ -740,7 +1010,7 @@ app.post('/api/liquidaciones', (req, res) => {
     res.status(201).json({
       success: true,
       id: outcome.liquidacionId,
-      message: 'Liquidación registrada y turnos marcados como pagados'
+      message: 'Liquidación registrada y turnos/ventas marcados como pagados'
     });
   } catch (error) {
     res.status(500).json({ error: error.message });

@@ -103,7 +103,7 @@ export default function AdminLiquidaciones({ barberos, shopConfig }) {
     setComprobanteGenerado(null);
 
     try {
-      const res = await fetch(`/api/liquidaciones/preview?barbero_id=${barberoId}&fecha_inicio=${fechaInicio}&fecha_fin=${fechaFin}`);
+      const res = await fetch(`/api/liquidaciones/preview?barbero_id=${barberoId}&fecha_inicio=${fechaInicio}&fecha_fin=${fechaFin}&porcentaje=${porcentaje}`);
       const data = await res.json();
 
       if (!res.ok) {
@@ -112,7 +112,9 @@ export default function AdminLiquidaciones({ barberos, shopConfig }) {
       }
 
       setResultadoPreview(data);
-      setPorcentaje(data.porcentaje_aplicado || 50);
+      if (data.porcentaje_aplicado !== undefined) {
+        setPorcentaje(data.porcentaje_aplicado);
+      }
     } catch (err) {
       setErrorPreview('Error al conectar con el servidor');
     } finally {
@@ -122,13 +124,20 @@ export default function AdminLiquidaciones({ barberos, shopConfig }) {
 
   // Cálculos dinámicos con porcentaje o deducciones ajustadas
   const subtotalBruto = resultadoPreview?.total_bruto || 0;
-  const comisionCalculada = Math.round(subtotalBruto * (Number(porcentaje) / 100));
+  const comisionServicios = Math.round(subtotalBruto * (Number(porcentaje) / 100));
+  const comisionProductos = resultadoPreview?.total_comision_productos || 0;
+  const comisionCalculada = comisionServicios + comisionProductos;
   const totalNetoAPagar = Math.max(0, comisionCalculada - Number(deducciones || 0));
-  const margenBarberia = subtotalBruto - comisionCalculada;
+  const margenBarberia = resultadoPreview?.margen_barberia !== undefined 
+    ? resultadoPreview.margen_barberia 
+    : (subtotalBruto - comisionServicios);
 
   // Registrar y Guardar Liquidación
   async function handleGuardarLiquidacion() {
-    if (!resultadoPreview || resultadoPreview.citas.length === 0) return;
+    const citasIds = resultadoPreview?.citas?.map(c => c.id) || [];
+    const ventasIds = resultadoPreview?.ventas_productos?.map(v => v.id) || [];
+
+    if (citasIds.length === 0 && ventasIds.length === 0) return;
 
     setGuardando(true);
     try {
@@ -143,7 +152,8 @@ export default function AdminLiquidaciones({ barberos, shopConfig }) {
           deducciones: Number(deducciones || 0),
           metodo_pago: metodoPago,
           notas: notasLiquidacion,
-          citas_ids: resultadoPreview.citas.map(c => c.id)
+          citas_ids: citasIds,
+          ventas_ids: ventasIds
         })
       });
 
@@ -163,11 +173,14 @@ export default function AdminLiquidaciones({ barberos, shopConfig }) {
         total_bruto: subtotalBruto,
         porcentaje: Number(porcentaje),
         monto_comision: comisionCalculada,
+        comision_servicios: comisionServicios,
+        comision_productos: comisionProductos,
         deducciones: Number(deducciones || 0),
         total_pagado: totalNetoAPagar,
         margen_barberia: margenBarberia,
         metodo_pago: metodoPago,
         citas: resultadoPreview.citas,
+        ventas_productos: resultadoPreview.ventas_productos || [],
         fecha_emision: new Date().toLocaleString('es-CO')
       });
 
@@ -270,7 +283,7 @@ export default function AdminLiquidaciones({ barberos, shopConfig }) {
           
           {/* Panel de Filtros para Cálculo */}
           <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-lg space-y-4">
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
               
               {/* Barbero */}
               <div>
@@ -284,13 +297,13 @@ export default function AdminLiquidaciones({ barberos, shopConfig }) {
                 >
                   {barberos.map(b => (
                     <option key={b.id} value={b.id}>
-                      {b.nombre} (Comisión: {b.porcentaje_comision}%)
+                      {b.nombre} (Base: {b.porcentaje_comision}%)
                     </option>
                   ))}
                 </select>
               </div>
 
-              {/* Rango de Fechas */}
+              {/* Fecha Inicio */}
               <div>
                 <label className="block text-xs font-semibold text-slate-400 uppercase mb-1.5">
                   Fecha Inicio *
@@ -303,6 +316,7 @@ export default function AdminLiquidaciones({ barberos, shopConfig }) {
                 />
               </div>
 
+              {/* Fecha Fin */}
               <div>
                 <label className="block text-xs font-semibold text-slate-400 uppercase mb-1.5">
                   Fecha Fin *
@@ -313,6 +327,28 @@ export default function AdminLiquidaciones({ barberos, shopConfig }) {
                   onChange={(e) => setFechaFin(e.target.value)}
                   className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-amber-500"
                 />
+              </div>
+
+              {/* Porcentaje Libre Escrito por el Dueño */}
+              <div>
+                <label className="block text-xs font-semibold text-amber-400 uppercase mb-1.5 flex items-center justify-between">
+                  <span>% Porcentaje a Pagar *</span>
+                  <span className="text-[10px] text-slate-500 font-normal">Escribe el %</span>
+                </label>
+                <div className="relative">
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    step="1"
+                    required
+                    value={porcentaje}
+                    onChange={(e) => setPorcentaje(e.target.value)}
+                    placeholder="Ej. 50"
+                    className="w-full bg-slate-950 border border-amber-500/50 rounded-xl px-3 py-2 text-amber-400 font-black text-base focus:outline-none focus:border-amber-400 pr-8"
+                  />
+                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-amber-400 font-bold text-sm">%</span>
+                </div>
               </div>
 
             </div>

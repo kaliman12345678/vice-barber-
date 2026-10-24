@@ -82,13 +82,51 @@ function initDatabase() {
 
     CREATE TABLE IF NOT EXISTS costos (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      categoria TEXT NOT NULL, -- Arriendo, Servicios Públicos, Insumos / Productos, Mantenimiento, Nómina / Fijos, Otros
+      tipo TEXT DEFAULT 'egreso', -- 'egreso' o 'ingreso'
+      categoria TEXT NOT NULL,
       descripcion TEXT NOT NULL,
       monto_cop INTEGER NOT NULL,
       fecha TEXT NOT NULL, -- YYYY-MM-DD
       metodo_pago TEXT DEFAULT 'Efectivo',
+      barbero_id INTEGER,
       notas TEXT,
+      creado_en DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (barbero_id) REFERENCES barberos (id) ON DELETE SET NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS productos (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      nombre TEXT NOT NULL,
+      foto_url TEXT,
+      stock INTEGER NOT NULL DEFAULT 0,
+      precio_venta INTEGER NOT NULL,
+      costo_compra INTEGER NOT NULL DEFAULT 0,
+      porcentaje_comision REAL DEFAULT 10.0, -- % para el barbero que lo vende
+      categoria TEXT DEFAULT 'Cuidado Capilar',
+      descripcion TEXT,
+      activo INTEGER DEFAULT 1,
       creado_en DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS ventas_productos (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      producto_id INTEGER NOT NULL,
+      cantidad INTEGER NOT NULL DEFAULT 1,
+      precio_unitario INTEGER NOT NULL,
+      costo_unitario INTEGER NOT NULL DEFAULT 0,
+      total_venta INTEGER NOT NULL,
+      porcentaje_comision REAL NOT NULL,
+      monto_comision INTEGER NOT NULL,
+      ganancia_neta INTEGER NOT NULL,
+      barbero_id INTEGER, -- Quién lo vendió (o NULL si vendió la recepción)
+      metodo_pago TEXT DEFAULT 'Efectivo',
+      fecha TEXT NOT NULL, -- YYYY-MM-DD
+      notas TEXT,
+      liquidacion_id INTEGER,
+      creado_en DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (producto_id) REFERENCES productos (id) ON DELETE RESTRICT,
+      FOREIGN KEY (barbero_id) REFERENCES barberos (id) ON DELETE SET NULL,
+      FOREIGN KEY (liquidacion_id) REFERENCES liquidaciones (id) ON DELETE SET NULL
     );
 
     CREATE TABLE IF NOT EXISTS configuracion (
@@ -120,6 +158,56 @@ function initDatabase() {
   setConfig.run('intervalo_minutos', '30'); // Granularidad del selector de horas
   setConfig.run('hora_apertura', '08:00');
   setConfig.run('hora_cierre', '20:00');
+
+  // Migración segura para columnas añadidas en costos
+  try {
+    db.prepare("ALTER TABLE costos ADD COLUMN tipo TEXT DEFAULT 'egreso'").run();
+  } catch (e) {}
+  try {
+    db.prepare("ALTER TABLE costos ADD COLUMN barbero_id INTEGER").run();
+  } catch (e) {}
+
+  // Seed de productos de venta si no hay
+  const prodCount = db.prepare(`SELECT COUNT(*) as count FROM productos`).get().count;
+  if (prodCount === 0) {
+    const insertProd = db.prepare(`
+      INSERT INTO productos (nombre, foto_url, stock, precio_venta, costo_compra, porcentaje_comision, categoria, descripcion, activo)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
+    `);
+
+    insertProd.run(
+      'Cera Modeladora Acabado Mate (100g)',
+      'https://images.unsplash.com/photo-1598452963314-b09f397a5c48?w=300&h=300&fit=crop',
+      15,
+      35000,
+      18000,
+      15.0, // 15% para el barbero que la venda ($5.250 COP)
+      'Cuidado Capilar',
+      'Fijación media-alta sin brillo para peinados naturales y duraderos.'
+    );
+
+    insertProd.run(
+      'Aceite Hidratante para Barba (30ml)',
+      'https://images.unsplash.com/photo-1626806787461-102c1bfaaea1?w=300&h=300&fit=crop',
+      10,
+      28000,
+      14000,
+      10.0, // 10% para el barbero ($2.800 COP)
+      'Cuidado de Barba',
+      'Aceite de argán y jojoba que suaviza la barba y cuida la piel.'
+    );
+
+    insertProd.run(
+      'Shampoo Anticaída & Fortalecedor (250ml)',
+      'https://images.unsplash.com/photo-1535585209827-a15fcdbc4c2d?w=300&h=300&fit=crop',
+      8,
+      42000,
+      22000,
+      10.0,
+      'Cuidado Capilar',
+      'Con biotina y extractos naturales para estimular el crecimiento.'
+    );
+  }
 
   // Seed de datos de prueba si no hay barberos
   const barberoCount = db.prepare(`SELECT COUNT(*) as count FROM barberos`).get().count;
