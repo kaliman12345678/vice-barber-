@@ -30,6 +30,36 @@ export default function AdminBarberos({ barberos, onRecargar }) {
   const [subiendoFoto, setSubiendoFoto] = useState(false);
   const [error, setError] = useState('');
 
+  // Edición rápida de porcentajes individuales en tarjetas
+  const [porcentajesEditables, setPorcentajesEditables] = useState({});
+  const [guardandoComisionId, setGuardandoComisionId] = useState(null);
+
+  async function handleGuardarComisionRapida(barberoId, nuevoPorcentaje) {
+    const val = Number(nuevoPorcentaje);
+    if (isNaN(val) || val < 0 || val > 100) return;
+
+    setGuardandoComisionId(barberoId);
+    try {
+      const res = await fetch(`/api/barberos/${barberoId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ porcentaje_comision: val })
+      });
+      if (res.ok) {
+        if (onRecargar) onRecargar();
+        setPorcentajesEditables(prev => {
+          const copy = { ...prev };
+          delete copy[barberoId];
+          return copy;
+        });
+      }
+    } catch (err) {
+      console.error('Error guardando comisión:', err);
+    } finally {
+      setGuardandoComisionId(null);
+    }
+  }
+
   async function handleSubirFotoBarbero(e) {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -182,6 +212,15 @@ export default function AdminBarberos({ barberos, onRecargar }) {
         </button>
       </div>
 
+      {/* Mensaje de comisiones individuales */}
+      <div className="bg-amber-500/10 border border-amber-500/20 rounded-2xl p-4 flex items-center gap-3 text-xs text-amber-300">
+        <Percent className="w-5 h-5 text-amber-400 flex-shrink-0" />
+        <div>
+          <span className="font-bold block text-white text-sm">Comisiones Individuales por Barbero</span>
+          <span>Cada barbero gana un porcentaje personalizado según su experiencia o acuerdo. Modifícalo directamente en la tarjeta de cada uno o en el botón de editar.</span>
+        </div>
+      </div>
+
       {/* Lista de Barberos */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
         {barberos.map((b) => {
@@ -222,16 +261,34 @@ export default function AdminBarberos({ barberos, onRecargar }) {
                   </div>
                 </div>
 
-                {/* Detalles: Comisión y Horario */}
-                <div className="space-y-2 text-xs bg-slate-950/40 p-3 rounded-xl border border-slate-800/80">
-                  <div className="flex justify-between items-center">
-                    <span className="text-slate-400 flex items-center gap-1">
+                {/* Detalles: Comisión Individual y Horario */}
+                <div className="space-y-2.5 text-xs bg-slate-950/40 p-3.5 rounded-xl border border-slate-800/80">
+                  <div className="flex justify-between items-center bg-slate-900/90 p-2 rounded-xl border border-amber-500/20">
+                    <span className="text-slate-300 font-medium flex items-center gap-1.5">
                       <Percent className="w-3.5 h-3.5 text-amber-400" />
-                      Comisión Asignada:
+                      Comisión Individual:
                     </span>
-                    <span className="font-extrabold text-amber-400 text-sm">
-                      {b.porcentaje_comision}%
-                    </span>
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        type="number"
+                        min="0"
+                        max="100"
+                        value={porcentajesEditables[b.id] ?? b.porcentaje_comision}
+                        onChange={(e) => setPorcentajesEditables(prev => ({ ...prev, [b.id]: e.target.value }))}
+                        className="w-14 bg-slate-950 border border-slate-700 focus:border-amber-400 rounded-lg px-2 py-1 text-center font-black text-amber-400 text-xs focus:outline-none"
+                      />
+                      <span className="text-amber-400 font-bold text-xs">%</span>
+                      {porcentajesEditables[b.id] !== undefined && Number(porcentajesEditables[b.id]) !== b.porcentaje_comision && (
+                        <button
+                          type="button"
+                          disabled={guardandoComisionId === b.id}
+                          onClick={() => handleGuardarComisionRapida(b.id, porcentajesEditables[b.id])}
+                          className="px-2 py-1 bg-amber-500 hover:bg-amber-400 text-slate-950 rounded-lg text-[10px] font-black transition-all shadow-md shadow-amber-500/20"
+                        >
+                          {guardandoComisionId === b.id ? '...' : 'Guardar'}
+                        </button>
+                      )}
+                    </div>
                   </div>
                   <div className="flex justify-between items-center">
                     <span className="text-slate-400 flex items-center gap-1">

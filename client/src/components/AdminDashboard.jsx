@@ -14,7 +14,8 @@ import {
   ShieldCheck,
   PanelLeftClose,
   PanelLeftOpen,
-  Package
+  Package,
+  Calculator
 } from 'lucide-react';
 import InstagramIcon from './InstagramIcon';
 import AdminAgenda from './AdminAgenda';
@@ -27,6 +28,7 @@ import AdminBalance from './AdminBalance';
 import AdminConfig from './AdminConfig';
 import AdminMediaManager from './AdminMediaManager';
 import AdminProductos from './AdminProductos';
+import AdminRentabilidad from './AdminRentabilidad';
 
 export default function AdminDashboard({ shopConfig, onConfigActualizada }) {
   const [activeTab, setActiveTab] = useState('agenda');
@@ -60,10 +62,11 @@ export default function AdminDashboard({ shopConfig, onConfigActualizada }) {
     { id: 'liquidaciones', label: 'Plantilla de Pagos (%)', icon: Percent, badge: 'Principal' },
     { id: 'costos', label: 'Caja & Egresos', icon: DollarSign },
     { id: 'productos', label: 'Productos & Stock', icon: Package, badge: 'Tienda' },
+    { id: 'balance', label: 'Balance General', icon: TrendingUp, badge: 'Desglose' },
+    { id: 'rentabilidad', label: 'Rentabilidad & Proyección', icon: Calculator, badge: 'Simulador' },
     { id: 'barberos', label: 'Equipo Barberos', icon: Users },
     { id: 'servicios', label: 'Servicios & Tarifas', icon: Scissors },
     { id: 'media', label: 'Galería & Redes', icon: InstagramIcon, badge: 'Social' },
-    { id: 'balance', label: 'Balance Financiero', icon: TrendingUp },
     { id: 'config', label: 'Ajustes del Local', icon: Settings },
   ];
 
@@ -292,6 +295,12 @@ export default function AdminDashboard({ shopConfig, onConfigActualizada }) {
 
             {activeTab === 'balance' && (
               <AdminBalance />
+            )}
+
+            {activeTab === 'rentabilidad' && (
+              <AdminRentabilidad 
+                barberos={barberos}
+              />
             )}
 
             {activeTab === 'config' && (

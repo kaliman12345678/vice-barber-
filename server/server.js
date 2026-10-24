@@ -183,8 +183,40 @@ app.put('/api/barberos/:id', (req, res) => {
           activo = COALESCE(?, activo)
       WHERE id = ?
     `);
-    stmt.run(nombre, telefono, foto_url, porcentaje_comision, horario_inicio, horario_fin, dias_laborales, activo, id);
-    res.json({ success: true, message: 'Barbero actualizado' });
+    stmt.run(
+      nombre !== undefined ? nombre : null,
+      telefono !== undefined ? telefono : null,
+      foto_url !== undefined ? foto_url : null,
+      porcentaje_comision !== undefined && porcentaje_comision !== '' ? Number(porcentaje_comision) : null,
+      horario_inicio !== undefined ? horario_inicio : null,
+      horario_fin !== undefined ? horario_fin : null,
+      dias_laborales !== undefined ? dias_laborales : null,
+      activo !== undefined ? (activo ? 1 : 0) : null,
+      id
+    );
+    res.json({ success: true, message: 'Barbero actualizado con éxito' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.patch('/api/barberos/:id', (req, res) => {
+  const { id } = req.params;
+  const { porcentaje_comision, activo } = req.body;
+
+  try {
+    const barbero = db.prepare('SELECT * FROM barberos WHERE id = ?').get(id);
+    if (!barbero) return res.status(404).json({ error: 'Barbero no encontrado' });
+
+    if (porcentaje_comision !== undefined) {
+      db.prepare('UPDATE barberos SET porcentaje_comision = ? WHERE id = ?').run(Number(porcentaje_comision), id);
+    }
+    if (activo !== undefined) {
+      db.prepare('UPDATE barberos SET activo = ? WHERE id = ?').run(activo ? 1 : 0, id);
+    }
+
+    const actualizado = db.prepare('SELECT * FROM barberos WHERE id = ?').get(id);
+    res.json({ success: true, message: 'Barbero actualizado', barbero: actualizado });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -1068,7 +1100,7 @@ app.get('/api/liquidaciones/:id', (req, res) => {
 });
 
 // ----------------------------------------------------
-// 9. REPORTE FINANCIERO Y BALANCE GENERAL
+// 9. REPORTE FINANCIERO, BALANCE GENERAL Y DETALLE POR BARBERO
 // ----------------------------------------------------
 app.get('/api/reportes/balance', (req, res) => {
   const { desde, hasta } = req.query;
@@ -1081,42 +1113,208 @@ app.get('/api/reportes/balance', (req, res) => {
       paramsCitas.push(desde, hasta);
     }
     const citasData = db.prepare(sqlCitas).get(...paramsCitas);
-    const totalIngresos = citasData.total_ingresos || 0;
+    const totalIngresosServicios = citasData.total_ingresos || 0;
     const totalServicios = citasData.cantidad_servicios || 0;
 
-    // 2. Liquidaciones pagadas a barberos
-    let sqlLiq = `SELECT SUM(monto_comision) as total_comisiones FROM liquidaciones WHERE 1=1`;
+    // 2. Ventas de productos
+    let sqlProd = `SELECT SUM(total_venta) as total_ventas, SUM(monto_comision) as total_comisiones, COUNT(*) as count FROM ventas_productos WHERE 1=1`;
+    const paramsProd = [];
+    if (desde && hasta) {
+      sqlProd += ' AND fecha BETWEEN ? AND ?';
+      paramsProd.push(desde, hasta);
+    }
+    const prodData = db.prepare(sqlProd).get(...paramsProd);
+    const totalVentasProductos = prodData.total_ventas || 0;
+
+    // 3. Ingresos extras de caja (no provenientes de productos)
+    let sqlIngresosExtras = `SELECT SUM(monto_cop) as total FROM costos WHERE tipo = 'ingreso' AND categoria != 'Venta de Productos'`;
+    const paramsIngresosExtras = [];
+    if (desde && hasta) {
+      sqlIngresosExtras += ' AND fecha BETWEEN ? AND ?';
+      paramsIngresosExtras.push(desde, hasta);
+    }
+    const ingresosExtrasData = db.prepare(sqlIngresosExtras).get(...paramsIngresosExtras);
+    const totalIngresosExtras = ingresosExtrasData.total || 0;
+
+    // 4. Liquidaciones pagadas a barberos
+    let sqlLiq = `SELECT SUM(total_pagado) as total_pagado, SUM(monto_comision) as total_comisiones FROM liquidaciones WHERE 1=1`;
     const paramsLiq = [];
     if (desde && hasta) {
       sqlLiq += ' AND fecha_pago BETWEEN ? AND ?';
       paramsLiq.push(`${desde} 00:00:00`, `${hasta} 23:59:59`);
     }
     const liqData = db.prepare(sqlLiq).get(...paramsLiq);
-    const totalComisiones = liqData.total_comisiones || 0;
+    const totalComisionesPagadas = liqData.total_pagado || liqData.total_comisiones || 0;
 
-    // 3. Gastos y costos operativos
-    let sqlCostos = `SELECT SUM(monto_cop) as total_gastos FROM costos WHERE 1=1`;
+    // 5. Gastos y costos operativos (tipo = 'egreso')
+    let sqlCostos = `SELECT SUM(monto_cop) as total_gastos FROM costos WHERE tipo = 'egreso'`;
     const paramsCostos = [];
     if (desde && hasta) {
       sqlCostos += ' AND fecha BETWEEN ? AND ?';
       paramsCostos.push(desde, hasta);
     }
     const costosData = db.prepare(sqlCostos).get(...paramsCostos);
-    const totalCostos = costosData.total_gastos || 0;
+    const totalCostosOperativos = costosData.total_gastos || 0;
 
-    // Ganancia neta para el negocio
-    const margenBruto = totalIngresos - totalComisiones;
-    const gananciaNeta = margenBruto - totalCostos;
+    // Totales consolidados
+    const totalIngresos = totalIngresosServicios + totalVentasProductos + totalIngresosExtras;
+    const margenBruto = totalIngresos - totalComisionesPagadas;
+    const gananciaNeta = margenBruto - totalCostosOperativos;
+
+    // 6. DESGLOSE INDEPENDIENTE POR CADA BARBERO
+    const todosBarberos = db.prepare('SELECT id, nombre, telefono, foto_url, porcentaje_comision, activo FROM barberos ORDER BY id ASC').all();
+
+    const barberosDetalle = todosBarberos.map(b => {
+      // Citas completadas de este barbero
+      let sqlBCitas = `SELECT COUNT(*) as count, SUM(precio_cobrado) as total FROM citas WHERE barbero_id = ? AND estado = 'completada'`;
+      const paramsBCitas = [b.id];
+      if (desde && hasta) {
+        sqlBCitas += ' AND fecha BETWEEN ? AND ?';
+        paramsBCitas.push(desde, hasta);
+      }
+      const bCitas = db.prepare(sqlBCitas).get(...paramsBCitas);
+      const serviciosCount = bCitas.count || 0;
+      const totalBrutoServicios = bCitas.total || 0;
+
+      // Ventas de productos por este barbero
+      let sqlBProd = `SELECT COUNT(*) as count, SUM(total_venta) as total_venta, SUM(monto_comision) as total_comision FROM ventas_productos WHERE barbero_id = ?`;
+      const paramsBProd = [b.id];
+      if (desde && hasta) {
+        sqlBProd += ' AND fecha BETWEEN ? AND ?';
+        paramsBProd.push(desde, hasta);
+      }
+      const bProd = db.prepare(sqlBProd).get(...paramsBProd);
+      const ventasProdCount = bProd.count || 0;
+      const totalBrutoProd = bProd.total_venta || 0;
+      const comisionProd = bProd.total_comision || 0;
+
+      // Liquidaciones pagadas a este barbero
+      let sqlBLiq = `SELECT SUM(total_pagado) as total_pagado, SUM(monto_comision) as total_comision FROM liquidaciones WHERE barbero_id = ?`;
+      const paramsBLiq = [b.id];
+      if (desde && hasta) {
+        sqlBLiq += ' AND fecha_pago BETWEEN ? AND ?';
+        paramsBLiq.push(`${desde} 00:00:00`, `${hasta} 23:59:59`);
+      }
+      const bLiq = db.prepare(sqlBLiq).get(...paramsBLiq);
+      const totalLiquidado = bLiq.total_pagado || 0;
+
+      // Citas completadas pendientes por liquidar
+      let sqlBPend = `SELECT SUM(precio_cobrado) as total_pendiente, COUNT(*) as count_pendiente FROM citas WHERE barbero_id = ? AND estado = 'completada' AND liquidacion_id IS NULL`;
+      const paramsBPend = [b.id];
+      if (desde && hasta) {
+        sqlBPend += ' AND fecha BETWEEN ? AND ?';
+        paramsBPend.push(desde, hasta);
+      }
+      const bPend = db.prepare(sqlBPend).get(...paramsBPend);
+      const brutoServiciosPendiente = bPend.total_pendiente || 0;
+      const comisionServiciosPendiente = Math.round(brutoServiciosPendiente * ((b.porcentaje_comision || 50) / 100));
+
+      const totalBrutoGenerado = totalBrutoServicios + totalBrutoProd;
+      
+      // Total asignado al barbero (lo pagado + lo pendiente por pagar)
+      const totalGanadoBarbero = totalLiquidado > 0 ? (totalLiquidado + comisionServiciosPendiente) : (comisionServiciosPendiente + comisionProd);
+      // Lo que le queda a la barbería generado por este barbero
+      const retenidoBarberia = totalBrutoGenerado - totalGanadoBarbero;
+      const margenRetenidoPct = totalBrutoGenerado > 0 
+        ? Math.round((retenidoBarberia / totalBrutoGenerado) * 100) 
+        : Math.round(100 - (b.porcentaje_comision || 50));
+
+      return {
+        id: b.id,
+        nombre: b.nombre,
+        foto_url: b.foto_url,
+        telefono: b.telefono,
+        porcentaje_comision: b.porcentaje_comision || 50,
+        activo: b.activo,
+        servicios_realizados: serviciosCount,
+        total_bruto_servicios: totalBrutoServicios,
+        ventas_productos_count: ventasProdCount,
+        total_bruto_productos: totalBrutoProd,
+        total_bruto_generado: totalBrutoGenerado,
+        total_pagado_liquidaciones: totalLiquidado,
+        comisiones_pendientes: comisionServiciosPendiente,
+        total_ganado_barbero: totalGanadoBarbero,
+        retenido_barberia: retenidoBarberia,
+        porcentaje_retenido_barberia: margenRetenidoPct
+      };
+    });
 
     res.json({
       total_ingresos: totalIngresos,
+      total_ingresos_servicios: totalIngresosServicios,
+      total_ventas_productos: totalVentasProductos,
+      total_ingresos_extras: totalIngresosExtras,
       total_servicios: totalServicios,
-      total_comisiones_pagadas: totalComisiones,
-      total_costos_operativos: totalCostos,
+      total_comisiones_pagadas: totalComisionesPagadas,
+      total_costos_operativos: totalCostosOperativos,
       margen_barberia: margenBruto,
-      ganancia_neta: gananciaNeta
+      ganancia_neta: gananciaNeta,
+      barberos_detalle: barberosDetalle
     });
 
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Endpoint para estadísticas del simulador de rentabilidad & punto de equilibrio
+app.get('/api/reportes/rentabilidad-stats', (req, res) => {
+  try {
+    const hoy = new Date();
+    const primerDiaMes = new Date(hoy.getFullYear(), hoy.getMonth(), 1).toISOString().split('T')[0];
+    const ultimoDiaMes = new Date(hoy.getFullYear(), hoy.getMonth() + 1, 0).toISOString().split('T')[0];
+
+    // Citas del mes actual
+    const citasMes = db.prepare(`
+      SELECT COUNT(*) as count, SUM(precio_cobrado) as total 
+      FROM citas 
+      WHERE estado = 'completada' AND fecha BETWEEN ? AND ?
+    `).get(primerDiaMes, ultimoDiaMes);
+
+    // Egresos del mes actual (Costos fijos reales registrados)
+    const egresosMes = db.prepare(`
+      SELECT SUM(monto_cop) as total 
+      FROM costos 
+      WHERE tipo = 'egreso' AND fecha BETWEEN ? AND ?
+    `).get(primerDiaMes, ultimoDiaMes);
+
+    // Todos los egresos registrados (para promedio mensual en caso de no tener egresos en este mes aún)
+    const egresosTotales = db.prepare(`
+      SELECT SUM(monto_cop) as total, COUNT(DISTINCT substr(fecha, 1, 7)) as meses_count 
+      FROM costos 
+      WHERE tipo = 'egreso'
+    `).get();
+
+    let costosFijosEstimados = egresosMes.total || 0;
+    if (costosFijosEstimados === 0 && egresosTotales.total > 0) {
+      const meses = Math.max(1, egresosTotales.meses_count || 1);
+      costosFijosEstimados = Math.round(egresosTotales.total / meses);
+    }
+    if (costosFijosEstimados === 0) {
+      costosFijosEstimados = 1200000; // Valor de referencia estándar (arriendo + servicios)
+    }
+
+    // Barberos activos y comisiones
+    const barberos = db.prepare('SELECT id, nombre, porcentaje_comision FROM barberos WHERE activo = 1').all();
+    const totalComision = barberos.reduce((acc, b) => acc + (b.porcentaje_comision || 50), 0);
+    const comisionPromedio = barberos.length > 0 ? Math.round(totalComision / barberos.length) : 50;
+
+    // Servicios activos y precio promedio
+    const servicios = db.prepare('SELECT precio_cop FROM servicios WHERE activo = 1').all();
+    const totalPrecios = servicios.reduce((acc, s) => acc + (s.precio_cop || 0), 0);
+    const precioPromedio = servicios.length > 0 ? Math.round(totalPrecios / servicios.length) : 25000;
+
+    res.json({
+      mes_actual_inicio: primerDiaMes,
+      mes_actual_fin: ultimoDiaMes,
+      citas_mes_actual: citasMes.count || 0,
+      ingresos_mes_actual: citasMes.total || 0,
+      costos_fijos_mensuales: costosFijosEstimados,
+      barberos_activos_count: barberos.length || 1,
+      comision_promedio: comisionPromedio,
+      precio_promedio_corte: precioPromedio,
+      barberos
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

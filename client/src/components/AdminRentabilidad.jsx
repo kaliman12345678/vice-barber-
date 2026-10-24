@@ -1,0 +1,681 @@
+import React, { useState, useEffect } from 'react';
+import { 
+  Calculator, 
+  TrendingUp, 
+  TrendingDown, 
+  AlertTriangle, 
+  CheckCircle, 
+  DollarSign, 
+  Scissors, 
+  Users, 
+  Target, 
+  Calendar, 
+  Sliders, 
+  Sparkles, 
+  ShieldAlert, 
+  ArrowRight,
+  HelpCircle,
+  BarChart3,
+  Flame
+} from 'lucide-react';
+import { formatCOP } from '../utils/helpers';
+
+export default function AdminRentabilidad({ barberos = [] }) {
+  const [cargando, setCargando] = useState(false);
+
+  // Datos reales del mes actual desde el servidor
+  const [metricasReales, setMetricasReales] = useState({
+    citas_mes_actual: 0,
+    ingresos_mes_actual: 0,
+    costos_fijos_mensuales: 1200000,
+    barberos_activos_count: 2,
+    comision_promedio: 50,
+    precio_promedio_corte: 25000
+  });
+
+  // Parámetros interactivos del simulador
+  const [costosFijos, setCostosFijos] = useState(1200000); // Arriendo, servicios, etc.
+  const [precioCorte, setPrecioCorte] = useState(25000);
+  const [porcentajeComision, setPorcentajeComision] = useState(50);
+  const [numBarberos, setNumBarberos] = useState(2);
+  const [diasMes, setDiasMes] = useState(26); // Lunes a Sábado típicamente
+  const [margenProductos, setMargenProductos] = useState(150000); // Utilidad extra por ceras/aceites
+
+  // Meta personalizada de ganancia neta
+  const [metaGananciaDeseada, setMetaGananciaDeseada] = useState(2500000);
+
+  // Slider para simular ritmo diario actual
+  const [ritmoDiarioPorBarbero, setRitmoDiarioPorBarbero] = useState(6);
+
+  useEffect(() => {
+    cargarMetricasReales();
+  }, []);
+
+  async function cargarMetricasReales() {
+    setCargando(true);
+    try {
+      const res = await fetch('/api/reportes/rentabilidad-stats');
+      const data = await res.json();
+      setMetricasReales(data);
+
+      if (data.costos_fijos_mensuales > 0) setCostosFijos(data.costos_fijos_mensuales);
+      if (data.precio_promedio_corte > 0) setPrecioCorte(data.precio_promedio_corte);
+      if (data.comision_promedio > 0) setPorcentajeComision(data.comision_promedio);
+      if (data.barberos_activos_count > 0) setNumBarberos(data.barberos_activos_count);
+    } catch (err) {
+      console.error('Error cargando stats de rentabilidad:', err);
+    } finally {
+      setCargando(false);
+    }
+  }
+
+  // ==========================================
+  // CÁLCULOS MATEMÁTICOS DE PUNTO DE EQUILIBRIO
+  // ==========================================
+  // Margen que le queda a la barbería por cada corte realizado
+  const margenPorCorte = Math.max(1, precioCorte * (1 - (porcentajeComision / 100)));
+
+  // Costos fijos netos que deben cubrir los servicios de corte (descontando ganancia de productos)
+  const costosFijosACubrir = Math.max(0, costosFijos - margenProductos);
+
+  // Cortes mensuales necesarios para no perder dinero (Punto de Equilibrio)
+  const cortesEquilibrioMes = Math.ceil(costosFijosACubrir / margenPorCorte);
+
+  // Cortes diarios totales necesarios en la barbería
+  const cortesEquilibrioDiaTotal = (cortesEquilibrioMes / Math.max(1, diasMes)).toFixed(1);
+
+  // Cortes diarios que debe hacer CADA barbero para estar en equilibrio
+  const cortesEquilibrioDiaPorBarbero = (cortesEquilibrioMes / (Math.max(1, diasMes) * Math.max(1, numBarberos))).toFixed(1);
+
+  // Facturación bruta mínima mensual para equilibrio
+  const facturacionBrutaEquilibrio = cortesEquilibrioMes * precioCorte;
+
+  // ==========================================
+  // TERMÓMETRO ACTUAL: ¿DÓNDE ESTÁ HOY LA BARBERÍA?
+  // ==========================================
+  const cortesActuales = metricasReales.citas_mes_actual || 0;
+  const porcentajeEquilibrioAlcanzado = Math.min(100, Math.round((cortesActuales / Math.max(1, cortesEquilibrioMes)) * 100));
+  const cortesFaltantesParaEquilibrio = Math.max(0, cortesEquilibrioMes - cortesActuales);
+  const margenFaltanteCOP = cortesFaltantesParaEquilibrio * margenPorCorte;
+
+  // Ganancia neta real actual del mes según cortes realizados
+  const gananciaNetaActualMes = (cortesActuales * margenPorCorte) + margenProductos - costosFijos;
+
+  // ==========================================
+  // SIMULACIÓN DE ESCENARIOS (PESIMISTA, EQUILIBRIO, RENTABLE)
+  // ==========================================
+  function calcularEscenario(cortesDiaPorBarbero) {
+    const cortesMes = Math.round(cortesDiaPorBarbero * numBarberos * diasMes);
+    const facturacion = cortesMes * precioCorte;
+    const comisiones = Math.round(facturacion * (porcentajeComision / 100));
+    const margenServicios = facturacion - comisiones;
+    const resultadoNeto = margenServicios + margenProductos - costosFijos;
+    const margenNetoPct = facturacion > 0 ? Math.round((resultadoNeto / facturacion) * 100) : 0;
+
+    return {
+      cortesDiaPorBarbero,
+      cortesMes,
+      facturacion,
+      comisiones,
+      costosFijos,
+      resultadoNeto,
+      margenNetoPct,
+      esRentable: resultadoNeto > 0,
+      esEquilibrio: Math.abs(resultadoNeto) < 50000
+    };
+  }
+
+  // Escenario interactivo según el slider
+  const escenarioSimulado = calcularEscenario(ritmoDiarioPorBarbero);
+
+  // Escenario Pesimista (Días lentos)
+  const cortesPesimista = Math.max(1, Math.floor(Number(cortesEquilibrioDiaPorBarbero) * 0.6));
+  const escenarioPesimista = calcularEscenario(cortesPesimista);
+
+  // Escenario de Equilibrio
+  const escenarioEquilibrio = calcularEscenario(Number(cortesEquilibrioDiaPorBarbero));
+
+  // Escenario Rentable / Objetivo
+  const cortesRentable = Math.ceil(Number(cortesEquilibrioDiaPorBarbero) * 1.6);
+  const escenarioRentable = calcularEscenario(cortesRentable);
+
+  // ==========================================
+  // CALCULADORA INVERSA (META DE GANANCIA)
+  // ==========================================
+  // Para ganar X libre: Margen total necesario = Costos fijos + Meta - Margen productos
+  const margenTotalNecesarioParaMeta = Math.max(0, costosFijos + Number(metaGananciaDeseada || 0) - margenProductos);
+  const cortesNecesariosParaMeta = Math.ceil(margenTotalNecesarioParaMeta / margenPorCorte);
+  const cortesDiaPorBarberoParaMeta = (cortesNecesariosParaMeta / (Math.max(1, diasMes) * Math.max(1, numBarberos))).toFixed(1);
+  const facturacionMeta = cortesNecesariosParaMeta * precioCorte;
+
+  return (
+    <div className="space-y-8 animate-fadeIn">
+      
+      {/* Encabezado */}
+      <div className="border-b border-slate-800 pb-5">
+        <h3 className="text-xl font-bold text-white font-serif flex items-center gap-2">
+          <Calculator className="w-5 h-5 text-amber-400" />
+          Calculadora de Rentabilidad & Proyección Financiera
+        </h3>
+        <p className="text-xs text-slate-400 mt-1">
+          Descubre tu Punto de Equilibrio exacto, en qué estado se encuentra la barbería hoy, qué debes sumar para no perder dinero y simula escenarios de ganancia o pérdida.
+        </p>
+      </div>
+
+      {/* ======================================================== */}
+      {/* 1. TERMÓMETRO REAL DEL MES ACTUAL */}
+      {/* ======================================================== */}
+      <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-xl relative overflow-hidden">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-5">
+          <div>
+            <span className="text-[11px] font-bold text-amber-400 uppercase tracking-widest flex items-center gap-1.5">
+              <Flame className="w-4 h-4 text-amber-400" />
+              1. Estado Real de Este Mes (Termómetro de Supervivencia)
+            </span>
+            <h4 className="text-2xl font-bold text-white font-serif mt-1">
+              {cortesActuales} cortes realizados <span className="text-slate-400 text-sm font-sans font-normal">de {cortesEquilibrioMes} necesarios para equilibrio</span>
+            </h4>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <span className={`px-3 py-1 rounded-full text-xs font-black uppercase tracking-wider border ${
+              cortesActuales >= cortesEquilibrioMes
+                ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
+                : 'bg-rose-500/20 text-rose-400 border-rose-500/30'
+            }`}>
+              {cortesActuales >= cortesEquilibrioMes ? '✓ Zona Rentable' : '⚠️ En Zona de Déficit'}
+            </span>
+          </div>
+        </div>
+
+        {/* Barra de Progreso hacia el Punto de Equilibrio */}
+        <div className="space-y-2 mb-4">
+          <div className="flex justify-between text-xs font-semibold">
+            <span className="text-slate-400">Progreso para cubrir todos los costos:</span>
+            <span className={cortesActuales >= cortesEquilibrioMes ? 'text-emerald-400 font-bold' : 'text-amber-400'}>
+              {porcentajeEquilibrioAlcanzado}% del Punto de Equilibrio
+            </span>
+          </div>
+
+          <div className="w-full h-3.5 bg-slate-950 rounded-full overflow-hidden p-0.5 border border-slate-800">
+            <div 
+              className={`h-full rounded-full transition-all duration-700 ${
+                cortesActuales >= cortesEquilibrioMes
+                  ? 'bg-gradient-to-r from-amber-500 to-emerald-400'
+                  : 'bg-gradient-to-r from-rose-500 to-amber-500'
+              }`}
+              style={{ width: `${Math.min(100, Math.max(4, porcentajeEquilibrioAlcanzado))}%` }}
+            ></div>
+          </div>
+        </div>
+
+        {/* Diagnóstico en Texto Claro */}
+        <div className={`p-4 rounded-2xl border text-xs flex items-start gap-3 ${
+          cortesActuales >= cortesEquilibrioMes
+            ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-300'
+            : 'bg-rose-500/10 border-rose-500/20 text-rose-300'
+        }`}>
+          {cortesActuales >= cortesEquilibrioMes ? (
+            <>
+              <CheckCircle className="w-5 h-5 text-emerald-400 flex-shrink-0 mt-0.5" />
+              <div>
+                <strong className="block text-white font-bold mb-0.5">¡Punto de equilibrio superado!</strong>
+                <span>
+                  Todos los costos operativos fijos del mes ({formatCOP(costosFijos)}) ya están cubiertos. 
+                  Llevas una ganancia neta estimada de <strong className="text-white underline">{formatCOP(gananciaNetaActualMes)}</strong>. A partir de aquí, cada nuevo corte deja un margen limpio de <strong>{formatCOP(margenPorCorte)}</strong> a la barbería.
+                </span>
+              </div>
+            </>
+          ) : (
+            <>
+              <AlertTriangle className="w-5 h-5 text-rose-400 flex-shrink-0 mt-0.5" />
+              <div>
+                <strong className="block text-white font-bold mb-0.5">Aún no se cubren los costos fijos del mes</strong>
+                <span>
+                  Faltan exactamente <strong className="text-white underline">{cortesFaltantesParaEquilibrio} cortes</strong> (equivalentes a <strong className="text-white">{formatCOP(margenFaltanteCOP)}</strong> de margen) para llegar al punto de equilibrio y no perder dinero este mes.
+                </span>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* ======================================================== */}
+      {/* 2. PARÁMETROS DEL NEGOCIO & CÁLCULO DE EQUILIBRIO */}
+      {/* ======================================================== */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        
+        {/* Columna Izquierda: Parámetros Editables */}
+        <div className="lg:col-span-1 bg-slate-900 border border-slate-800 rounded-3xl p-5 shadow-xl space-y-4">
+          <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+            <h4 className="text-xs font-bold text-amber-400 uppercase tracking-wider flex items-center gap-1.5">
+              <Sliders className="w-4 h-4" />
+              Parámetros del Local
+            </h4>
+            <span className="text-[10px] text-slate-500">Editables</span>
+          </div>
+
+          {/* Costos Fijos Mensuales */}
+          <div>
+            <label className="block text-[11px] font-semibold text-slate-300 uppercase mb-1">
+              Costos Fijos del Mes (Arriendo, Luz, Agua)
+            </label>
+            <div className="relative">
+              <input
+                type="number"
+                step="50000"
+                value={costosFijos}
+                onChange={(e) => setCostosFijos(Number(e.target.value))}
+                className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-white font-bold text-sm focus:outline-none focus:border-amber-500"
+              />
+              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 text-xs">COP</span>
+            </div>
+          </div>
+
+          {/* Precio Promedio por Servicio */}
+          <div>
+            <label className="block text-[11px] font-semibold text-slate-300 uppercase mb-1">
+              Precio Promedio por Corte
+            </label>
+            <div className="relative">
+              <input
+                type="number"
+                step="1000"
+                value={precioCorte}
+                onChange={(e) => setPrecioCorte(Number(e.target.value))}
+                className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-white font-bold text-sm focus:outline-none focus:border-amber-500"
+              />
+              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 text-xs">COP</span>
+            </div>
+          </div>
+
+          {/* % Promedio Pagado al Barbero */}
+          <div>
+            <div className="flex justify-between items-center mb-1">
+              <label className="text-[11px] font-semibold text-slate-300 uppercase">
+                % Promedio al Barbero
+              </label>
+              <span className="text-xs font-black text-amber-400">{porcentajeComision}%</span>
+            </div>
+            <input
+              type="range"
+              min="30"
+              max="70"
+              step="5"
+              value={porcentajeComision}
+              onChange={(e) => setPorcentajeComision(Number(e.target.value))}
+              className="w-full accent-amber-500 cursor-pointer"
+            />
+            <div className="flex justify-between text-[10px] text-slate-500">
+              <span>Barbero: {porcentajeComision}%</span>
+              <span>Barbería: {100 - porcentajeComision}%</span>
+            </div>
+          </div>
+
+          {/* Barberos Activos y Días Laborales */}
+          <div className="grid grid-cols-2 gap-3 pt-1">
+            <div>
+              <label className="block text-[11px] font-semibold text-slate-300 uppercase mb-1">
+                Barberos Activos
+              </label>
+              <input
+                type="number"
+                min="1"
+                max="20"
+                value={numBarberos}
+                onChange={(e) => setNumBarberos(Math.max(1, Number(e.target.value)))}
+                className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-white font-bold text-sm text-center"
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] font-semibold text-slate-300 uppercase mb-1">
+                Días de Trabajo/Mes
+              </label>
+              <input
+                type="number"
+                min="10"
+                max="31"
+                value={diasMes}
+                onChange={(e) => setDiasMes(Math.max(1, Number(e.target.value)))}
+                className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-white font-bold text-sm text-center"
+              />
+            </div>
+          </div>
+
+          {/* Ganancia por productos */}
+          <div>
+            <label className="block text-[11px] font-semibold text-slate-300 uppercase mb-1">
+              Ganancia mensual por Productos (Ceras/Tienda)
+            </label>
+            <div className="relative">
+              <input
+                type="number"
+                step="20000"
+                value={margenProductos}
+                onChange={(e) => setMargenProductos(Number(e.target.value))}
+                className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-emerald-400 font-bold text-sm focus:outline-none focus:border-emerald-500"
+              />
+              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 text-xs">COP</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Columna Derecha: Tarjetas del Punto de Equilibrio Matemático */}
+        <div className="lg:col-span-2 space-y-4">
+          <div className="bg-gradient-to-br from-amber-500/10 via-slate-900 to-slate-950 border border-amber-500/30 rounded-3xl p-6 shadow-xl">
+            <span className="text-xs font-bold text-amber-400 uppercase tracking-widest block mb-1">
+              Fórmula de Supervivencia: Punto de Equilibrio
+            </span>
+            <h4 className="text-xl font-bold text-white font-serif">
+              ¿Cuánto debe sumar la barbería para no perder dinero?
+            </h4>
+            <p className="text-xs text-slate-400 mt-1">
+              Con un margen de <strong className="text-white">{formatCOP(margenPorCorte)}</strong> por corte ({100 - porcentajeComision}% para la barbería):
+            </p>
+
+            {/* 3 Métricas Clave de Equilibrio */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-5">
+              
+              <div className="bg-slate-950/80 border border-slate-800 p-4 rounded-2xl">
+                <span className="text-[10px] font-bold text-slate-400 uppercase block">
+                  Cortes Mínimos al Mes
+                </span>
+                <span className="text-3xl font-black text-amber-400 font-serif block mt-1">
+                  {cortesEquilibrioMes}
+                </span>
+                <span className="text-[10px] text-slate-500 mt-1 block">
+                  Facturación: {formatCOP(facturacionBrutaEquilibrio)}
+                </span>
+              </div>
+
+              <div className="bg-slate-950/80 border border-slate-800 p-4 rounded-2xl">
+                <span className="text-[10px] font-bold text-slate-400 uppercase block">
+                  Cortes Totales por Día
+                </span>
+                <span className="text-3xl font-black text-white font-serif block mt-1">
+                  {cortesEquilibrioDiaTotal}
+                </span>
+                <span className="text-[10px] text-slate-500 mt-1 block">
+                  Entre todo el equipo ({diasMes} días)
+                </span>
+              </div>
+
+              <div className="bg-slate-950/80 border border-amber-500/40 p-4 rounded-2xl bg-amber-500/5">
+                <span className="text-[10px] font-bold text-amber-300 uppercase block">
+                  Meta Diaria por Barbero
+                </span>
+                <span className="text-3xl font-black text-amber-400 font-serif block mt-1">
+                  {cortesEquilibrioDiaPorBarbero}
+                </span>
+                <span className="text-[10px] text-amber-300/80 mt-1 block">
+                  Cortes/día que debe hacer c/u
+                </span>
+              </div>
+
+            </div>
+          </div>
+
+          {/* Calculadora Inversa: ¿Cuánto quieres ganar? */}
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-5 shadow-xl">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-800 pb-3">
+              <div>
+                <h5 className="font-bold text-white text-sm font-serif flex items-center gap-2">
+                  <Target className="w-4 h-4 text-emerald-400" />
+                  Meta de Ganancia Libre para el Dueño
+                </h5>
+                <span className="text-xs text-slate-400">
+                  ¿Cuánto dinero limpio deseas llevarte a tu bolsillo al mes?
+                </span>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  step="200000"
+                  value={metaGananciaDeseada}
+                  onChange={(e) => setMetaGananciaDeseada(Number(e.target.value))}
+                  className="bg-slate-950 border border-emerald-500/50 rounded-xl px-3 py-2 text-emerald-400 font-black text-sm text-right w-40 focus:outline-none focus:border-emerald-400"
+                />
+                <span className="text-xs text-slate-400 font-bold">COP</span>
+              </div>
+            </div>
+
+            <div className="mt-4 p-4 rounded-2xl bg-slate-950/60 border border-emerald-500/20 text-xs text-slate-300 flex items-start gap-3">
+              <Sparkles className="w-5 h-5 text-emerald-400 flex-shrink-0 mt-0.5" />
+              <div>
+                <span className="font-bold text-white block mb-0.5">
+                  Plan de Acción para lograr {formatCOP(metaGananciaDeseada)} netos:
+                </span>
+                <span>
+                  Tu equipo de <strong className="text-amber-400">{numBarberos} barberos</strong> debe atender un total de <strong className="text-white">{cortesNecesariosParaMeta} cortes al mes</strong>. 
+                  Esto significa que cada barbero debe realizar un promedio de <strong className="text-emerald-400 text-sm">{cortesDiaPorBarberoParaMeta} cortes diarios</strong> para alcanzar tu meta después de pagar todos los gastos y comisiones.
+                </span>
+              </div>
+            </div>
+          </div>
+
+        </div>
+
+      </div>
+
+      {/* ======================================================== */}
+      {/* 3. MATRIZ DE ESCENARIOS: ¿EN QUÉ ESCENARIO GANO O PIERDO? */}
+      {/* ======================================================== */}
+      <div className="space-y-4">
+        <div className="border-b border-slate-800 pb-3">
+          <h4 className="text-sm font-bold text-white uppercase tracking-wider flex items-center gap-2">
+            <BarChart3 className="w-4 h-4 text-amber-400" />
+            3. Matriz de Escenarios Interactivos: ¿Gano o Pierdo Dinero?
+          </h4>
+          <p className="text-xs text-slate-400">
+            Compara los resultados financieros según el ritmo de clientes atendidos al día por cada barbero.
+          </p>
+        </div>
+
+        {/* 3 Escenarios Predefinidos en Tarjetas */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+          
+          {/* ESCENARIO 1: PESIMISTA (DÉFICIT / PÉRDIDAS) */}
+          <div className="bg-slate-900 border border-rose-500/30 rounded-3xl p-5 shadow-xl relative overflow-hidden flex flex-col justify-between">
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="px-2.5 py-0.5 rounded-full bg-rose-500/20 text-rose-400 text-[10px] font-black uppercase tracking-wider border border-rose-500/30">
+                  🔴 Escenario Pesimista
+                </span>
+                <span className="text-xs font-bold text-slate-400">
+                  {escenarioPesimista.cortesDiaPorBarbero} cortes/día c/u
+                </span>
+              </div>
+
+              <div>
+                <span className="text-[11px] text-slate-400 block">Resultado Neto para el Dueño:</span>
+                <span className="text-2xl font-black text-rose-400 font-serif">
+                  {formatCOP(escenarioPesimista.resultadoNeto)}
+                </span>
+                <span className="text-[10px] text-rose-400/80 block font-semibold mt-0.5">
+                  Pérdida mensual por falta de volumen
+                </span>
+              </div>
+
+              <div className="space-y-1.5 text-xs text-slate-400 pt-3 border-t border-slate-800">
+                <div className="flex justify-between">
+                  <span>Cortes del mes:</span>
+                  <span className="text-slate-200 font-bold">{escenarioPesimista.cortesMes}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Facturado bruto:</span>
+                  <span className="text-slate-200 font-bold">{formatCOP(escenarioPesimista.facturacion)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Comisiones barberos:</span>
+                  <span className="text-slate-200">{formatCOP(escenarioPesimista.comisiones)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Costos fijos local:</span>
+                  <span className="text-slate-200">{formatCOP(escenarioPesimista.costosFijos)}</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-4 pt-3 border-t border-rose-500/20 text-[11px] text-slate-400">
+              💡 <em>Diagnóstico:</em> No alcanza a cubrir arriendo ni servicios. Requiere promociones en días muertos (lunes a miércoles) o venta activa de productos.
+            </div>
+          </div>
+
+          {/* ESCENARIO 2: EQUILIBRIO (GASTOS CUBIERTOS) */}
+          <div className="bg-slate-900 border border-amber-500/30 rounded-3xl p-5 shadow-xl relative overflow-hidden flex flex-col justify-between">
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="px-2.5 py-0.5 rounded-full bg-amber-500/20 text-amber-400 text-[10px] font-black uppercase tracking-wider border border-amber-500/30">
+                  🟡 Punto de Equilibrio
+                </span>
+                <span className="text-xs font-bold text-slate-400">
+                  {escenarioEquilibrio.cortesDiaPorBarbero} cortes/día c/u
+                </span>
+              </div>
+
+              <div>
+                <span className="text-[11px] text-slate-400 block">Resultado Neto para el Dueño:</span>
+                <span className="text-2xl font-black text-amber-400 font-serif">
+                  {formatCOP(escenarioEquilibrio.resultadoNeto)}
+                </span>
+                <span className="text-[10px] text-slate-400 block mt-0.5">
+                  Gastos 100% cubiertos (Punto Cero)
+                </span>
+              </div>
+
+              <div className="space-y-1.5 text-xs text-slate-400 pt-3 border-t border-slate-800">
+                <div className="flex justify-between">
+                  <span>Cortes del mes:</span>
+                  <span className="text-slate-200 font-bold">{escenarioEquilibrio.cortesMes}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Facturado bruto:</span>
+                  <span className="text-slate-200 font-bold">{formatCOP(escenarioEquilibrio.facturacion)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Comisiones barberos:</span>
+                  <span className="text-slate-200">{formatCOP(escenarioEquilibrio.comisiones)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Costos fijos local:</span>
+                  <span className="text-slate-200">{formatCOP(escenarioEquilibrio.costosFijos)}</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-4 pt-3 border-t border-amber-500/20 text-[11px] text-slate-400">
+              ⚖️ <em>Diagnóstico:</em> Todos los gastos del local están saldados. Cada cliente extra a partir de aquí es ganancia neta pura para el dueño.
+            </div>
+          </div>
+
+          {/* ESCENARIO 3: RENTABLE / META (SUPERÁVIT) */}
+          <div className="bg-slate-900 border border-emerald-500/30 rounded-3xl p-5 shadow-xl relative overflow-hidden flex flex-col justify-between">
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 text-[10px] font-black uppercase tracking-wider border border-emerald-500/30">
+                  🟢 Escenario Rentable
+                </span>
+                <span className="text-xs font-bold text-slate-400">
+                  {escenarioRentable.cortesDiaPorBarbero} cortes/día c/u
+                </span>
+              </div>
+
+              <div>
+                <span className="text-[11px] text-slate-400 block">Resultado Neto para el Dueño:</span>
+                <span className="text-2xl font-black text-emerald-400 font-serif">
+                  +{formatCOP(escenarioRentable.resultadoNeto)}
+                </span>
+                <span className="text-[10px] text-emerald-400/80 block font-semibold mt-0.5">
+                  Margen neto libre: {escenarioRentable.margenNetoPct}%
+                </span>
+              </div>
+
+              <div className="space-y-1.5 text-xs text-slate-400 pt-3 border-t border-slate-800">
+                <div className="flex justify-between">
+                  <span>Cortes del mes:</span>
+                  <span className="text-slate-200 font-bold">{escenarioRentable.cortesMes}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Facturado bruto:</span>
+                  <span className="text-slate-200 font-bold">{formatCOP(escenarioRentable.facturacion)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Comisiones barberos:</span>
+                  <span className="text-slate-200">{formatCOP(escenarioRentable.comisiones)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Costos fijos local:</span>
+                  <span className="text-slate-200">{formatCOP(escenarioRentable.costosFijos)}</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-4 pt-3 border-t border-emerald-500/20 text-[11px] text-slate-400">
+              🚀 <em>Diagnóstico:</em> Negocio en alta rentabilidad. Flujo de caja positivo y ganancias estables para reinvertir o retirar.
+            </div>
+          </div>
+
+        </div>
+
+        {/* Simulador Manual con Slider Libre */}
+        <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-xl mt-6">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-4">
+            <div>
+              <h5 className="font-bold text-white text-sm font-serif flex items-center gap-2">
+                <Sliders className="w-4 h-4 text-amber-400" />
+                Simulador Dinámico Personalizado
+              </h5>
+              <span className="text-xs text-slate-400">
+                Mueve el control para ver qué pasa si cada barbero hace cierta cantidad de cortes al día:
+              </span>
+            </div>
+
+            <div className="flex items-center gap-2 bg-slate-950 px-4 py-2 rounded-2xl border border-slate-800">
+              <span className="text-xs text-slate-400">Ritmo elegido:</span>
+              <span className="text-lg font-black text-amber-400 font-serif">
+                {ritmoDiarioPorBarbero} cortes / día
+              </span>
+              <span className="text-[10px] text-slate-500">por barbero</span>
+            </div>
+          </div>
+
+          <input
+            type="range"
+            min="1"
+            max="15"
+            step="0.5"
+            value={ritmoDiarioPorBarbero}
+            onChange={(e) => setRitmoDiarioPorBarbero(Number(e.target.value))}
+            className="w-full accent-amber-500 cursor-pointer h-2 bg-slate-950 rounded-lg mb-4"
+          />
+
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 bg-slate-950/70 p-4 rounded-2xl border border-slate-800 text-xs">
+            <div>
+              <span className="text-slate-500 block">Total cortes al mes:</span>
+              <span className="text-lg font-black text-white">{escenarioSimulado.cortesMes} turnos</span>
+            </div>
+            <div>
+              <span className="text-slate-500 block">Facturación bruta:</span>
+              <span className="text-lg font-black text-slate-200">{formatCOP(escenarioSimulado.facturacion)}</span>
+            </div>
+            <div>
+              <span className="text-slate-500 block">Comisiones del equipo:</span>
+              <span className="text-lg font-black text-amber-400">{formatCOP(escenarioSimulado.comisiones)}</span>
+            </div>
+            <div>
+              <span className="text-slate-500 block">Ganancia Neta Dueño:</span>
+              <span className={`text-xl font-black font-serif ${
+                escenarioSimulado.resultadoNeto >= 0 ? 'text-emerald-400' : 'text-rose-400'
+              }`}>
+                {escenarioSimulado.resultadoNeto >= 0 ? '+' : ''}{formatCOP(escenarioSimulado.resultadoNeto)}
+              </span>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+    </div>
+  );
+}

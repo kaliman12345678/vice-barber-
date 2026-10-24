@@ -64,6 +64,33 @@ export default function AdminLiquidaciones({ barberos, shopConfig }) {
     }
     setResultadoPreview(null);
     setComprobanteGenerado(null);
+    setMensajePorcentajeFijo('');
+  }
+
+  const barberoSeleccionado = barberos.find(b => String(b.id) === String(barberoId));
+  const [guardandoPorcentajeFijo, setGuardandoPorcentajeFijo] = useState(false);
+  const [mensajePorcentajeFijo, setMensajePorcentajeFijo] = useState('');
+
+  async function guardarPorcentajePorDefecto() {
+    if (!barberoId || !porcentaje) return;
+    setGuardandoPorcentajeFijo(true);
+    setMensajePorcentajeFijo('');
+    try {
+      const res = await fetch(`/api/barberos/${barberoId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ porcentaje_comision: Number(porcentaje) })
+      });
+      if (res.ok) {
+        setMensajePorcentajeFijo(`✓ Guardado: ${porcentaje}% es ahora el porcentaje individual fijo.`);
+        if (barberoSeleccionado) barberoSeleccionado.porcentaje_comision = Number(porcentaje);
+        setTimeout(() => setMensajePorcentajeFijo(''), 4000);
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setGuardandoPorcentajeFijo(false);
+    }
   }
 
   // Preajustes de rango de fechas
@@ -349,6 +376,23 @@ export default function AdminLiquidaciones({ barberos, shopConfig }) {
                   />
                   <span className="absolute right-3 top-1/2 -translate-y-1/2 text-amber-400 font-bold text-sm">%</span>
                 </div>
+
+                {/* Botón para guardar como porcentaje fijo de este barbero */}
+                {barberoSeleccionado && Number(porcentaje) !== barberoSeleccionado.porcentaje_comision && (
+                  <button
+                    type="button"
+                    onClick={guardarPorcentajePorDefecto}
+                    disabled={guardandoPorcentajeFijo}
+                    className="mt-1.5 text-[10px] text-amber-400 hover:text-amber-300 font-semibold flex items-center gap-1 transition-colors"
+                  >
+                    <span>💾 Guardar {porcentaje}% como comisión fija de {barberoSeleccionado.nombre}</span>
+                  </button>
+                )}
+                {mensajePorcentajeFijo && (
+                  <p className="mt-1 text-[10px] text-emerald-400 font-medium">
+                    {mensajePorcentajeFijo}
+                  </p>
+                )}
               </div>
 
             </div>

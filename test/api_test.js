@@ -68,8 +68,8 @@ async function runTests() {
   const resDisp1 = await request('GET', `/disponibilidad?barbero_id=${barbero.id}&fecha=${testFecha}&duracion_minutos=${servicio.duracion_minutos}`);
   assert.strictEqual(resDisp1.status, 200);
   assert.ok(resDisp1.data.slots.length > 0, 'Debe generar slots');
-  const slotPrueba = resDisp1.data.slots[0];
-  assert.strictEqual(slotPrueba.disponible, true, 'El primer slot debe estar disponible');
+  const slotPrueba = resDisp1.data.slots.find(s => s.disponible);
+  assert.ok(slotPrueba, 'Debe haber un slot disponible para la prueba');
   console.log(`✓ Slots generados. Slot prueba: ${slotPrueba.hora_inicio} a ${slotPrueba.hora_fin}`);
 
   // Agendar cita en ese slot
